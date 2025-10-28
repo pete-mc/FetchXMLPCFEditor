@@ -69,6 +69,17 @@ const EditorShellInner: React.FC<IEditorShellProps> = ({ value, onChange, disabl
     if (!value) return;
     const m = /<entity[^>]*name=["']([^"']+)["']/i.exec(value);
     if (m?.[1]) store.setSelectedEntity(m[1]);
+
+    try {
+      // parse attribute names from FetchXML like: <attribute name="statecode" />
+      const doc = new DOMParser().parseFromString(value, 'application/xml');
+      const attrs = Array.from(doc.getElementsByTagName('attribute')).map((n) => n.getAttribute('name') || '').filter(Boolean) as string[];
+      if (attrs.length > 0) {
+        store.setSelectedFieldNames(attrs);
+      }
+    } catch (e) {
+      // ignore parse errors and leave store selection as-is
+    }
   }, [value, store]);
 
   const columns = React.useMemo(() => {

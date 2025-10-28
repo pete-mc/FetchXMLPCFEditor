@@ -49,6 +49,7 @@ const FetchXmlQueryBuilder: React.FC<FetchXmlQueryBuilderProps> = ({ value, onCh
   }
   const [fields, setFields] = React.useState<ColumnDef[]>([]);
   const qbRef = React.useRef<QueryBuilderComponent | null>(null);
+  const entityNameRef = React.useRef<string>('entity');
 
   // Helper: escape XML values
   const escapeXml = (s: unknown) => {
@@ -162,6 +163,7 @@ const FetchXmlQueryBuilder: React.FC<FetchXmlQueryBuilderProps> = ({ value, onCh
         if (!columns.find((c) => c.field === f)) columns.push({ field: f, label: f, type: 'string' });
       });
 
+      entityNameRef.current = entityName || 'entity';
       return { rule: rootRule, columns, entityName };
     } catch (_e) {
       return defaultResult;
@@ -245,6 +247,42 @@ const FetchXmlQueryBuilder: React.FC<FetchXmlQueryBuilderProps> = ({ value, onCh
       setFields(propsColumns as ColumnDef[]);
     } else if (columns?.length) setFields(columns);
   }, [value]);
+
+  // When external columns change (for example when the field checkboxes are toggled),
+  // update the local fields and emit a new FetchXML that reflects the selected attributes.
+  React.useEffect(() => {
+  const cols = (propsColumns?.length) ? (propsColumns as ColumnDef[]) : fields;
+    setFields(cols);
+    try {
+      const fetchXml = buildFetchXml(rule, entityNameRef.current || 'entity', cols);
+      onChange(fetchXml);
+    } catch (_e) {
+      // ignore
+    }
+    // we purposely omit `rule` from deps to avoid an immediate loop; rule changes are handled by onRuleChange
+  }, [propsColumns]);
+
+  // Inject small CSS overrides to ensure Syncfusion popup/dropdown elements render correctly
+  // inside the Power Apps host (avoid being clipped or positioned at top-left).
+  React.useEffect(() => {
+    const id = 'fetchxml-qb-popup-fix';
+    if (document.getElementById(id)) return;
+    const style = document.createElement('style');
+    style.id = id;
+    style.innerHTML = `
+      /* Let Syncfusion compute popup position (absolute) — only increase z-index so popups appear above host chrome. */
+      .e-popup, .e-dropdown-popup, .e-ddl.e-popup {
+        position: absolute !important;
+        z-index: 2147483000 !important; /* very high but below browser max */
+      }
+      /* keep popup internals in normal flow */
+      .e-popup .e-list-parent, .e-popup .e-content {
+        position: relative !important;
+      }
+    `;
+    document.head.appendChild(style);
+    return () => { try { style.remove(); } catch { /* ignore */ } };
+  }, []);
 
   // Memoize fields for QueryBuilder configuration (Syncfusion ColumnsModel ~ ColumnModel here)
   const qbColumns = React.useMemo(() => {
