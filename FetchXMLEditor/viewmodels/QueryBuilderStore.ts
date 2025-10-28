@@ -13,7 +13,9 @@ export class QueryBuilderStore {
   getFieldsForEntity?: (logicalName: string) => Promise<IFieldMetadata[]>;
 
   constructor() {
-    makeAutoObservable(this, {}, { autoBind: true });
+    // Call makeAutoObservable with a typed function signature to avoid 'any' lint errors
+    const mao = makeAutoObservable as unknown as (target: unknown, props?: unknown, options?: { autoBind?: boolean }) => void;
+    mao(this, {}, { autoBind: true });
   }
 
   setEntityList(list: IEntityListItem[]) {

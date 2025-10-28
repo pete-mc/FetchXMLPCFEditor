@@ -54,8 +54,32 @@ export class FetchXMLEditor implements ComponentFramework.ReactControl<IInputs, 
             const dl = this.extractLabel(r['displayname']);
             if (dl) display = dl;
         }
-        const attributeType = (r['attributetype'] ?? r['AttributeType'] ?? '') as string;
-        return { logicalName: String(logical), displayName: String(display), attributeType: String(attributeType) };
+        // Normalize Dataverse attribute types into simple types consumed by the QueryBuilder
+        const attributeTypeRaw = String((r['attributetype'] ?? r['AttributeType'] ?? '') || '').toLowerCase();
+        // Map common Dataverse metadata types to QueryBuilder-friendly types
+        const map: Record<string, string> = {
+            'string': 'string',
+            'memo': 'string',
+            'boolean': 'boolean',
+            'datetime': 'date',
+            'datetime2': 'date',
+            'datetimeoffset': 'date',
+            'dateandtime': 'date',
+            'integer': 'number',
+            'int': 'number',
+            'decimal': 'number',
+            'double': 'number',
+            'money': 'number',
+            'lookup': 'string',
+            'owner': 'string',
+            'customer': 'string',
+            'partylist': 'string',
+            'picklist': 'string',
+            'optionset': 'string',
+            'uniqueidentifier': 'string'
+        };
+        const normalized = map[attributeTypeRaw] ?? 'string';
+        return { logicalName: String(logical), displayName: String(display), attributeType: normalized };
     }
 
     /**

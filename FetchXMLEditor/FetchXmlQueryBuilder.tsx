@@ -1,5 +1,6 @@
 import * as React from 'react';
 import { QueryBuilderComponent, RuleModel } from '@syncfusion/ej2-react-querybuilder';
+import { ColumnsModel } from '@syncfusion/ej2-querybuilder';
 
 // Syncfusion styles (Fluent theme) and icons — required so the QueryBuilder buttons/icons render
 import '@syncfusion/ej2-base/styles/fluent.css';
@@ -274,6 +275,8 @@ const FetchXmlQueryBuilder: React.FC<FetchXmlQueryBuilderProps> = ({ value, onCh
       .e-popup, .e-dropdown-popup, .e-ddl.e-popup {
         position: absolute !important;
         z-index: 2147483000 !important; /* very high but below browser max */
+        background: white !important; /* ensure visible against host chrome */
+        border: 1px solid rgba(0,0,0,0.08) !important;
       }
       /* keep popup internals in normal flow */
       .e-popup .e-list-parent, .e-popup .e-content {
@@ -285,9 +288,33 @@ const FetchXmlQueryBuilder: React.FC<FetchXmlQueryBuilderProps> = ({ value, onCh
   }, []);
 
   // Memoize fields for QueryBuilder configuration (Syncfusion ColumnsModel ~ ColumnModel here)
-  const qbColumns = React.useMemo(() => {
+  const qbColumns = React.useMemo<ColumnsModel[]>(() => {
     // Syncfusion QueryBuilder expects columns: { field: string, label?: string, type?: string }
-    return fields.map((f) => ({ field: f.field, label: f.label ?? f.field, type: f.type ?? 'string' }));
+    const opsForType = (t?: string) => {
+  const tt = (t ?? 'string').toLowerCase();
+      const mk = (v: string, text?: string) => ({ key: v, text: text ?? v });
+      if (tt === 'date' || tt === 'datetime' || tt === 'datetimeoffset') {
+        return [mk('eq', 'Equals'), mk('ne', 'Not equals'), mk('lt', 'Less than'), mk('gt', 'Greater than'), mk('le', 'Less or equal'), mk('ge', 'Greater or equal'), mk('between', 'Between'), mk('null', 'Null'), mk('not-null', 'Not null')];
+      }
+      if (tt === 'number' || tt === 'int' || tt === 'integer' || tt === 'decimal' || tt === 'double' || tt === 'money') {
+        return [mk('eq', 'Equals'), mk('ne', 'Not equals'), mk('lt', 'Less than'), mk('gt', 'Greater than'), mk('le', 'Less or equal'), mk('ge', 'Greater or equal'), mk('in', 'In'), mk('not-in', 'Not in'), mk('null', 'Null'), mk('not-null', 'Not null')];
+      }
+      if (tt === 'boolean' || tt === 'bool') {
+        return [mk('eq', 'Equals'), mk('ne', 'Not equals'), mk('null', 'Null'), mk('not-null', 'Not null')];
+      }
+      // default string
+      return [mk('equal', 'Equals'), mk('notequal', 'Not equals'), mk('contains', 'Contains'), mk('notcontains', 'Not contains'), mk('startswith', 'Starts with'), mk('endswith', 'Ends with'), mk('null', 'Null'), mk('not-null', 'Not null')];
+    };
+
+    return fields.map((f) => {
+      const type = f.type ?? 'string';
+  const ops = opsForType(type) as ColumnsModel['operators'];
+      // Provide primitive values for boolean fields so the QueryBuilder renders a proper dropdown
+      const values = (type.toLowerCase() === 'boolean' || type.toLowerCase() === 'bool') ? [true, false] : undefined;
+  const col: ColumnsModel = { field: f.field, label: f.label ?? f.field, type, operators: ops, values: values } as ColumnsModel;
+      // ColumnsModel typing in this build may be loose; return the constructed ColumnsModel
+      return col;
+    });
   }, [fields]);
 
   // Called by QueryBuilder when rules change
@@ -332,19 +359,70 @@ const FetchXmlQueryBuilder: React.FC<FetchXmlQueryBuilderProps> = ({ value, onCh
           No attributes found in FetchXML. Add attributes to the FetchXML or use a default entity to start building a query.
         </div>
       ) : (
-        <QueryBuilderComponent
-          ref={(r: QueryBuilderComponent | null) => {
-            qbRef.current = r;
+        <ErrorBoundary
+          onCatch={(err: Error, info: React.ErrorInfo) => {
+            // Attach a debug dump to window so it can be inspected in the host console
+            try {
+              const dump = {
+                time: new Date().toISOString(),
+                error: { message: err.message, stack: err.stack },
+                info,
+                rule,
+                qbColumns,
+                fields,
+                qbRef: qbRef.current ? { hasInstance: true } : { hasInstance: false },
+              };
+              // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+              // @ts-ignore
+              window.__fetchXmlQbLastError = dump;
+              console.error('FetchXmlQueryBuilder caught error:', dump);
+            } catch (e) {
+              // best-effort
+              console.error('Failed to write fetchxml-qb dump', e);
+            }
           }}
-          width="100%"
-          rule={rule}
-          columns={qbColumns}
-          change={onRuleChange}
-          readOnly={!!disabled}
-        />
+        >
+          <QueryBuilderComponent
+            ref={(r: QueryBuilderComponent | null) => {
+              qbRef.current = r;
+            }}
+            width="100%"
+            rule={rule}
+            columns={qbColumns}
+            change={onRuleChange}
+            readOnly={!!disabled}
+          />
+        </ErrorBoundary>
       )}
     </div>
   );
 };
+
+// Simple ErrorBoundary to catch rendering/runtime exceptions originating from
+// Syncfusion internals (they throw during some DOM interactions in host). We
+// capture a small debug dump and prevent the entire PCF control from unmounting.
+class ErrorBoundary extends React.Component<{
+  children: React.ReactNode;
+  onCatch?: (err: Error, info: React.ErrorInfo) => void;
+}> {
+  state = { hasError: false };
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+  componentDidCatch(error: Error, info: React.ErrorInfo) {
+    this.setState({ hasError: true });
+    if (this.props.onCatch) this.props.onCatch(error, info);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ padding: 12, color: '#900', background: '#fff6f6', borderRadius: 6 }}>
+          An internal error occurred while rendering the query editor. Open the browser console for details.
+        </div>
+      );
+    }
+    return this.props.children as React.ReactElement;
+  }
+}
 
 export default FetchXmlQueryBuilder;
