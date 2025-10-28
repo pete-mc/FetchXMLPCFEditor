@@ -1,0 +1,312 @@
+import * as React from 'react';
+import { QueryBuilderComponent, RuleModel } from '@syncfusion/ej2-react-querybuilder';
+
+// Syncfusion styles (Fluent theme) and icons — required so the QueryBuilder buttons/icons render
+import '@syncfusion/ej2-base/styles/fluent.css';
+import '@syncfusion/ej2-react-querybuilder/styles/fluent.css';
+import '@syncfusion/ej2-icons/styles/material.css';
+
+// Note: CSS is packaged as local files and referenced by the manifest. Keep imports for bundling.
+
+/**
+ * Props for the FetchXmlQueryBuilder component.
+ * - value: the FetchXML string stored in the bound text field (may be empty)
+ * - onChange: called with the new FetchXML when the user updates the query
+ * - disabled: optional UI disabled state
+ */
+export interface FetchXmlQueryBuilderProps {
+  value?: string | null;
+  onChange: (fetchXml: string) => void;
+  disabled?: boolean;
+  /** Optional externally-provided columns (from Dataverse metadata) */
+  columns?: { field: string; label?: string; type?: string }[];
+}
+
+/**
+ * Production-ready React component that embeds Syncfusion's QueryBuilder and
+ * maps its rules to/from Microsoft Dataverse FetchXML stored in a single-line text field.
+ *
+ * Responsibilities:
+ * - Parse props.value (FetchXML) on load and when it changes, initialize the QueryBuilder model.
+ * - Convert QueryBuilder rules back into FetchXML and call props.onChange(fetchXml) when rules change.
+ * - Provide a clean Fluent-like container so the control looks native in Power Apps.
+ */
+const FetchXmlQueryBuilder: React.FC<FetchXmlQueryBuilderProps> = ({ value, onChange, disabled, columns: propsColumns }) => {
+  const [rule, setRule] = React.useState<RuleModel>({ condition: 'and', rules: [] });
+  // Local column definition used to configure the QueryBuilder columns
+  interface ColumnDef {
+    field: string;
+    label?: string;
+    type?: string;
+  }
+  // Lightweight rule-like shape used for traversing/building rules
+  interface RuleLike {
+    field?: string;
+    operator?: string;
+    value?: string | number | boolean | (string | number)[] | undefined;
+    condition?: string;
+    rules?: RuleLike[];
+  }
+  const [fields, setFields] = React.useState<ColumnDef[]>([]);
+  const qbRef = React.useRef<QueryBuilderComponent | null>(null);
+
+  // Helper: escape XML values
+  const escapeXml = (s: unknown) => {
+    if (s === undefined || s === null) return '';
+    let str: string;
+    if (typeof s === 'string' || typeof s === 'number' || typeof s === 'boolean') {
+      str = String(s);
+    } else {
+      // avoid object default stringification
+      return '';
+    }
+    return str
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&apos;');
+  };
+
+  // Map common QueryBuilder operator names to FetchXML operator names.
+  // This covers common cases. Extend if you use custom operators.
+  const operatorToFetch = (op?: string) => {
+    if (!op) return 'eq';
+    const map: Record<string, string> = {
+      equal: 'eq',
+      '=': 'eq',
+      notequal: 'ne',
+      '!=': 'ne',
+      lessthan: 'lt',
+      greaterthan: 'gt',
+      lessthanorequal: 'le',
+      greaterthanorequal: 'ge',
+      contains: 'like',
+      notcontains: 'not-like',
+      like: 'like',
+      startswith: 'like',
+      endswith: 'like',
+      'in': 'in',
+      'not-in': 'not-in',
+      null: 'null',
+      'not-null': 'not-null',
+    };
+    return map[op.toLowerCase()] || op;
+  };
+
+  // Reverse map if needed in the future (QueryBuilder will supply its own operator names).
+
+  const parseFetchXml = (fetchXml?: string | null) => {
+    const defaultResult: { rule: RuleModel; columns: ColumnDef[]; entityName: string } = { rule: { condition: 'and', rules: [] }, columns: [], entityName: '' };
+    if (!fetchXml) return defaultResult;
+
+    try {
+      const dom = new DOMParser().parseFromString(fetchXml, 'text/xml');
+      const fetchEl = dom.getElementsByTagName('fetch')[0];
+      if (!fetchEl) return defaultResult;
+      const entityEl = fetchEl.getElementsByTagName('entity')[0];
+      if (!entityEl) return defaultResult;
+
+      const entityName = entityEl.getAttribute('name') ?? '';
+
+      // attributes
+  const attrNodes = Array.from(entityEl.getElementsByTagName('attribute'));
+  const columns: ColumnDef[] = attrNodes.map((n) => ({ field: n.getAttribute('name') ?? '', label: n.getAttribute('name') ?? '', type: 'string' }));
+
+      // recursive filter parser
+      const conditionToRule = (condEl: Element) => {
+        const attribute = condEl.getAttribute('attribute') ?? '';
+        const operator = condEl.getAttribute('operator') ?? 'eq';
+        // value attribute or nested <value> elements
+        let value: string | string[] | undefined;
+        if (condEl.hasAttribute('value')) {
+          value = condEl.getAttribute('value') ?? '';
+        } else {
+          const values = Array.from(condEl.getElementsByTagName('value'));
+          if (values.length > 0) value = values.map((v) => v.textContent ?? '');
+        }
+        // strip % for like
+        if (operator.toLowerCase() === 'like' && typeof value === 'string') {
+          value = value.replace(/^%+/, '').replace(/%+$/, '');
+        }
+        return { field: attribute, operator, value } as RuleModel;
+      };
+
+      const filterToRule = (filterEl: Element): RuleModel => {
+        const type = (filterEl.getAttribute('type') ?? 'and').toLowerCase() as 'and' | 'or';
+        const rules: RuleModel[] = [];
+        // direct condition children
+        const conds = Array.from(filterEl.children).filter((c) => c.tagName === 'condition' || c.tagName === 'filter');
+        conds.forEach((c) => {
+          if (c.tagName === 'condition') rules.push(conditionToRule(c));
+          else if (c.tagName === 'filter') rules.push(filterToRule(c));
+        });
+        return { condition: type, rules };
+      };
+
+      // top-level filters under entity
+  const filterEls = Array.from(entityEl.getElementsByTagName('filter'));
+      let rootRule: RuleModel = { condition: 'and', rules: [] };
+      if (filterEls.length === 1) rootRule = filterToRule(filterEls[0]);
+      else if (filterEls.length > 1) rootRule.rules = filterEls.map((f) => filterToRule(f));
+
+      // add referenced fields found in conditions
+      const referenced = new Set<string>();
+      const collect = (r: RuleLike | undefined) => {
+        if (!r) return;
+        if (r.field) referenced.add(r.field);
+        if (r.rules) r.rules.forEach((rr) => collect(rr));
+      };
+      collect(rootRule as unknown as RuleLike);
+      referenced.forEach((f) => {
+        if (!columns.find((c) => c.field === f)) columns.push({ field: f, label: f, type: 'string' });
+      });
+
+      return { rule: rootRule, columns, entityName };
+    } catch (_e) {
+      return defaultResult;
+    }
+  };
+
+  // Convert a QueryBuilder RuleModel back into FetchXML string
+  const buildFetchXml = (ruleModel: RuleModel, entityName = 'entity', attributes: ColumnDef[] = []) => {
+    // build attributes xml
+  const uniqueAttrs = new Set<string>(attributes.map((c) => c.field).filter(Boolean));
+
+    // also include any referenced fields from rules
+    const collect = (r: RuleLike | undefined) => {
+      if (!r) return;
+      if (r.field) uniqueAttrs.add(r.field);
+      if (r.rules) r.rules.forEach((rr) => collect(rr));
+    };
+    // RuleModel is structurally compatible with RuleLike so this is safe
+    collect(ruleModel as unknown as RuleLike);
+
+    const attrsXml = Array.from(uniqueAttrs)
+      .map((a) => `    <attribute name="${escapeXml(a)}" />`)
+      .join('\n');
+
+    // convert rule to xml recursively
+    const ruleToXml = (r?: RuleLike): string => {
+      if (!r) return '';
+      if (r.rules && Array.isArray(r.rules)) {
+        const type = (r.condition ?? 'and').toLowerCase();
+        const children = r.rules.map((child) => ruleToXml(child)).filter(Boolean).join('\n');
+        return `    <filter type="${escapeXml(type)}">\n${children}\n    </filter>`;
+      }
+
+      // Leaf condition
+      const field = r.field ?? '';
+      const operator = operatorToFetch(r.operator ?? '');
+      const value = r.value;
+
+      // No-value operators (null/not-null)
+      if (!operator) return '';
+      const opLower = operator.toLowerCase();
+      if (opLower === 'null' || opLower === 'not-null') {
+        return `    <condition attribute="${escapeXml(field)}" operator="${escapeXml(opLower)}" />`;
+      }
+
+      if (opLower === 'in' || opLower === 'not-in') {
+        // value expected as array or comma-separated
+        const vals = Array.isArray(value) ? value : String(value ?? '').split(',').map((s) => s.trim());
+        const vs = vals.map((v) => `      <value>${escapeXml(v)}</value>`).join('\n');
+        return `    <condition attribute="${escapeXml(field)}" operator="${escapeXml(opLower)}">\n${vs}\n    </condition>`;
+      }
+
+      // like/contains/startswith/endswith: map to 'like' and add % where appropriate
+      if (opLower === 'like' || opLower === 'contains' || opLower === 'startswith' || opLower === 'endswith') {
+        let s = String(value ?? '');
+        // If operator was contains -> wrap both sides
+        const opRaw = (r.operator ?? '').toString().toLowerCase();
+        if (opRaw === 'contains') s = `%${s}%`;
+        if (opRaw === 'startswith') s = `${s}%`;
+        if (opRaw === 'endswith') s = `%${s}`;
+        return `    <condition attribute="${escapeXml(field)}" operator="like" value="${escapeXml(s)}" />`;
+      }
+
+      // default simple condition with value attribute
+      return `    <condition attribute="${escapeXml(field)}" operator="${escapeXml(opLower)}" value="${escapeXml(value ?? '')}" />`;
+    };
+
+  const filtersXml = ruleToXml(ruleModel as unknown as RuleLike) || '';
+
+    const fetchXml = `<fetch mapping="logical">\n  <entity name="${escapeXml(entityName)}">\n${attrsXml}\n${filtersXml ? '\n' + filtersXml : ''}\n  </entity>\n</fetch>`;
+
+    return fetchXml;
+  };
+
+  // Initialize from props.value
+  React.useEffect(() => {
+    const { rule: parsedRule, columns } = parseFetchXml(value);
+    setRule(parsedRule);
+    // If external columns provided, prefer those; otherwise use parsed columns
+    if (propsColumns?.length) {
+      setFields(propsColumns as ColumnDef[]);
+    } else if (columns?.length) setFields(columns);
+  }, [value]);
+
+  // Memoize fields for QueryBuilder configuration (Syncfusion ColumnsModel ~ ColumnModel here)
+  const qbColumns = React.useMemo(() => {
+    // Syncfusion QueryBuilder expects columns: { field: string, label?: string, type?: string }
+    return fields.map((f) => ({ field: f.field, label: f.label ?? f.field, type: f.type ?? 'string' }));
+  }, [fields]);
+
+  // Called by QueryBuilder when rules change
+  const onRuleChange = (args: unknown) => {
+    // args may be a ChangeEvent with a 'value' property or a RuleModel directly
+    let newRule: RuleModel;
+    const isChangeEvent = (a: unknown): a is { value?: RuleModel } => {
+      return typeof a === 'object' && a !== null && Object.prototype.hasOwnProperty.call(a, 'value');
+    };
+
+    if (isChangeEvent(args)) {
+      newRule = args.value ?? ({} as RuleModel);
+    } else {
+      newRule = args as RuleModel;
+    }
+    setRule(newRule);
+    try {
+      // try to preserve entity name from incoming value if possible
+      const parsed = parseFetchXml(value);
+      const fetchXml = buildFetchXml(newRule, parsed.entityName ?? 'entity', fields);
+      onChange(fetchXml);
+    } catch (err) {
+      // if conversion fails, send an empty fetch wrapper to avoid breaking PCF
+      onChange('<fetch />');
+    }
+  };
+
+  // Small native-looking container styles
+  const containerStyle: React.CSSProperties = {
+    borderRadius: 6,
+    border: '1px solid rgba(0,0,0,0.08)',
+    padding: 8,
+    background: 'transparent',
+    fontFamily: 'Segoe UI, Roboto, system-ui, -apple-system, "Helvetica Neue", Arial',
+    minHeight: 120,
+  };
+
+  return (
+    <div style={containerStyle} aria-disabled={disabled}>
+      {qbColumns.length === 0 ? (
+        <div style={{ color: '#666', padding: '12px 8px' }}>
+          No attributes found in FetchXML. Add attributes to the FetchXML or use a default entity to start building a query.
+        </div>
+      ) : (
+        <QueryBuilderComponent
+          ref={(r: QueryBuilderComponent | null) => {
+            qbRef.current = r;
+          }}
+          width="100%"
+          rule={rule}
+          columns={qbColumns}
+          change={onRuleChange}
+          readOnly={!!disabled}
+        />
+      )}
+    </div>
+  );
+};
+
+export default FetchXmlQueryBuilder;

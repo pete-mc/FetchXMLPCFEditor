@@ -1,0 +1,15 @@
+/* Local vendor wrappers (packaged inside the control). These files import the real vendor CSS from node_modules
+  at build time which allows the manifest to reference local CSS resources instead of remote CDN links. */
+@import url("./vendor-ej2-base-fluent.css");
+@import url("./vendor-querybuilder-fluent.css");
+@import url("./vendor-icons-material.css");
+
+/* Small local overrides to improve sizing in the Power Apps canvas */
+.e-querybuilder .e-toolbar .e-btn {
+  min-width: 28px !important;
+  height: 28px !important;
+}
+.e-querybuilder .e-toolbar .e-btn .e-btn-text {
+  display: inline-block !important;
+  font-size: 12px !important;
+}
